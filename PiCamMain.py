@@ -703,22 +703,30 @@ class PiCameraObject(object):
         self,
         preEventSaveTime=2,
         initialWaitTime=10,
-        inactivityTime=2,
+        inactivityTime=5,
+        postEventSaveTime=2,
         circularBufferSize=60,
+        maxClipTime=50,
     ):
         """Sets camera buffer parameters.
 
         Parameters:
-            preEventSaveTime   : Minimum pre-event buffer in sec
-            initialWaitTime    : Initial wait time in sec
-            inactivityTime     : Second event wait time in sec
+            preEventSaveTime   : Video kept before the first event, in sec
+            initialWaitTime    : Close the clip if the line stays high this long, in sec
+            inactivityTime     : Close the clip after this long with no event, in sec
+                                 (long enough to keep a poke and its licks in one clip)
+            postEventSaveTime  : Video kept after the last event, in sec
             circularBufferSize : Total ring buffer size in sec
+            maxClipTime        : Save a clip once it is this long, in sec, before its
+                                 start leaves the ring buffer
         """
 
         self.vidBuffer = preEventSaveTime
         self.T1 = initialWaitTime
         self.T2 = inactivityTime
+        self.postBuffer = postEventSaveTime
         self.bufferLen = circularBufferSize
+        self.maxClip = maxClipTime
 
     def setStorage(self, dirPath=None):
         """Set storage path for video files.
@@ -1230,20 +1238,22 @@ class PiCameraObject(object):
                     if self.stopRequested:
                         raise Exception("StopRequested")
 
-                    # stop and close video if time elapses
-                    if (
-                        recordFlag == 1 and (self.getTime() - lastGPIOtime) > self.T1
-                    ) or (
-                        recordFlag == 2 and (self.getTime() - lastGPIOtime) > self.T2
-                    ):
+                    # close the clip: line held high for T1, no event for T2, or
+                    # clip as long as maxClip (save before its start leaves the buffer)
+                    now = self.getTime()
+                    vidStopTime = None
+                    if recordFlag == 1 and now - lastGPIOtime > self.T1:
+                        vidStopTime = lastGPIO[1] + self.T1 * 1e6
+                    elif recordFlag == 2 and now - lastGPIOtime > self.T2:
+                        vidStopTime = lastGPIO[1] + self.postBuffer * 1e6
+                    elif recordFlag and now - startTime > self.maxClip:
+                        vidStopTime = self.camera.timestamp
+
+                    if vidStopTime is not None:
 
                         with open(self.timeFileName, "a") as timeFile:
                             timeFile.write(eventLog)
                         vidStartTime = camStartTime - self.vidBuffer * 1e6
-                        if recordFlag == 1:
-                            vidStopTime = lastGPIO[1] + self.T1 * 1e6
-                        elif recordFlag == 2:
-                            vidStopTime = lastGPIO[1] + self.T2 * 1e6
 
                         duration = round((vidStopTime - vidStartTime) / 1e6)
 
@@ -1644,8 +1654,10 @@ if __name__ == "__main__":
             cam1.setBuffer(
                 preEventSaveTime=2,
                 initialWaitTime=10,
-                inactivityTime=2,
+                inactivityTime=5,
+                postEventSaveTime=2,
                 circularBufferSize=60,
+                maxClipTime=50,
             )
         cam1.recordSchedule()
         cam1.setStorage(video_dir)
